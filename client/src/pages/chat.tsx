@@ -9,10 +9,11 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import {
   Send, Plus, MessageSquare, Trash2, User, Bot, ChevronDown, ChevronUp,
   Sparkles, BookOpen, Upload, Moon, Sun, Menu, X,
-  Stars, Orbit
+  Stars, Orbit, Heart
 } from "lucide-react";
 import { BirthProfileDialog } from "@/components/BirthProfileDialog";
 import { RagUploadDialog } from "@/components/RagUploadDialog";
+import { CompatibilityDialog } from "@/components/CompatibilityDialog";
 import { PerplexityAttribution } from "@/components/PerplexityAttribution";
 import type { Conversation, Message, BirthProfile } from "@shared/schema";
 
@@ -29,6 +30,7 @@ export default function ChatPage() {
   const [showReasoning, setShowReasoning] = useState(false);
   const [showProfileDialog, setShowProfileDialog] = useState(false);
   const [showUploadDialog, setShowUploadDialog] = useState(false);
+  const [showMatchDialog, setShowMatchDialog] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isDark, setIsDark] = useState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -250,6 +252,16 @@ export default function ChatPage() {
             <BookOpen className="w-3.5 h-3.5" />
             Upload Books (RAG)
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start gap-2 text-xs"
+            onClick={() => setShowMatchDialog(true)}
+            data-testid="button-compatibility"
+          >
+            <Heart className="w-3.5 h-3.5" />
+            Kundali Matching
+          </Button>
         </div>
       </aside>
 
@@ -422,6 +434,10 @@ export default function ChatPage() {
       <RagUploadDialog
         open={showUploadDialog}
         onOpenChange={setShowUploadDialog}
+      />
+      <CompatibilityDialog
+        open={showMatchDialog}
+        onOpenChange={setShowMatchDialog}
       />
     </div>
   );

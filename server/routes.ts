@@ -117,12 +117,25 @@ async function fetchVedAstroData(
     { key: "karana", url: `Calculate/Karana/${timeLocStr}` },
     { key: "lunarDay", url: `Calculate/LunarDay/${timeLocStr}` },
 
-    // ===== DIVISIONAL CHARTS / VARGAS (Vargas.cs) =====
-    { key: "navamsha", url: `Calculate/AllPlanetNavamshaSign/${timeLocStr}` },        // D9 — Marriage, dharma, spiritual life
-    { key: "drekkana", url: `Calculate/AllPlanetDrekkanaSign/${timeLocStr}` },        // D3 — Siblings, courage, valour
-    { key: "dashamsha", url: `Calculate/AllPlanetDashamamshaSign/${timeLocStr}` },    // D10 — Career, profession, public life
-    { key: "saptamsha", url: `Calculate/AllPlanetSaptamshaSign/${timeLocStr}` },      // D7 — Children, progeny
-    { key: "hora", url: `Calculate/AllPlanetHoraSign/${timeLocStr}` },                // D2 — Wealth, finances
+    // ===== DIVISIONAL CHARTS / VARGAS (Vargas.cs) — COMPLETE SET =====
+    { key: "hora", url: `Calculate/AllPlanetHoraSign/${timeLocStr}` },                    // D2 — Wealth, finances
+    { key: "drekkana", url: `Calculate/AllPlanetDrekkanaSign/${timeLocStr}` },            // D3 — Siblings, courage, valour
+    { key: "saptamsha", url: `Calculate/AllPlanetSaptamshaSign/${timeLocStr}` },          // D7 — Children, progeny
+    { key: "navamsha", url: `Calculate/AllPlanetNavamshaSign/${timeLocStr}` },            // D9 — Marriage, dharma, spiritual life
+    { key: "dashamsha", url: `Calculate/AllPlanetDashamamshaSign/${timeLocStr}` },        // D10 — Career, profession, public life
+    { key: "dwadashamsha", url: `Calculate/AllPlanetDwadashamshaSign/${timeLocStr}` },    // D12 — Parents, ancestry
+    { key: "shodashamsha", url: `Calculate/AllPlanetShodashamshaSign/${timeLocStr}` },    // D16 — Vehicles, comforts, luxuries
+    { key: "vimshamsha", url: `Calculate/AllPlanetVimshamshaSign/${timeLocStr}` },        // D20 — Spiritual progress, upasana
+    { key: "trimshamsha", url: `Calculate/AllPlanetTrimshamshaSign/${timeLocStr}` },      // D30 — Misfortunes, evil, inauspiciousness
+    { key: "shashtyamsha", url: `Calculate/AllPlanetShashtyamshaSign/${timeLocStr}` },    // D60 — Past life karma, overall assessment
+
+    // ===== MUHURTA / TIMING (Muhurtha.cs + Core.cs) =====
+    { key: "panchaka", url: `Calculate/Panchaka/${timeLocStr}` },                        // Panchaka status at birth
+    { key: "panchangaTable", url: `Calculate/PanchangaTable/${timeLocStr}` },             // Full panchanga at birth
+    { key: "panchaPakshiBird", url: `Calculate/PanchaPakshiBirthBird/${timeLocStr}` },    // Pancha Pakshi birth bird
+    // Current panchanga for muhurta timing
+    { key: "currentPanchanga", url: `Calculate/PanchangaTable/${transitTimeLocStr}` },    // Current panchanga for timing
+    { key: "currentPanchaka", url: `Calculate/Panchaka/${transitTimeLocStr}` },           // Current panchaka status
 
     // ===== TRANSIT / GOCHARA — Current planetary positions =====
     // Uses current time to show where planets are NOW relative to birth chart
@@ -135,9 +148,9 @@ async function fetchVedAstroData(
   // Check cache for each endpoint first
   const uncachedEndpoints: typeof endpoints = [];
   for (const ep of endpoints) {
-    const isTransit = ep.key === 'transitPlanetData';
-    const ttl = isTransit ? TRANSIT_CACHE_TTL : NATAL_CACHE_TTL;
-    const cacheKey = isTransit ? `transit|${locationName}` : `${cachePrefix}|${ep.key}`;
+    const isTransitLike = ep.key === 'transitPlanetData' || ep.key === 'currentPanchanga' || ep.key === 'currentPanchaka';
+    const ttl = isTransitLike ? TRANSIT_CACHE_TTL : NATAL_CACHE_TTL;
+    const cacheKey = isTransitLike ? `transit|${ep.key}|${locationName}` : `${cachePrefix}|${ep.key}`;
     const cached = getCached(cacheKey, ttl);
     if (cached) {
       results[ep.key] = cached;
@@ -165,8 +178,8 @@ async function fetchVedAstroData(
               if (data?.Status === "Pass") {
                 results[ep.key] = data;
                 // Cache the result
-                const isTransit = ep.key === 'transitPlanetData';
-                const cacheKey = isTransit ? `transit|${locationName}` : `${cachePrefix}|${ep.key}`;
+                const isTransitLike = ep.key === 'transitPlanetData' || ep.key === 'currentPanchanga' || ep.key === 'currentPanchaka';
+                const cacheKey = isTransitLike ? `transit|${ep.key}|${locationName}` : `${cachePrefix}|${ep.key}`;
                 setCache(cacheKey, data);
               } else {
                 const msg = typeof data?.Payload === 'string' ? data.Payload.substring(0, 80) : '';
@@ -333,12 +346,17 @@ function formatAstroContext(data: Record<string, any>): string {
   // ==================== VIMSHOTTARI DASHA ====================
   addSection("dasaForNow", "Current Vimshottari Dasha Period (Mahadasha > Antardasha > Pratyantardasha)", 2000);
 
-  // ==================== DIVISIONAL CHARTS (VARGAS) ====================
-  addSection("navamsha", "Navamsha (D9) — Dharma, Marriage, Spiritual Life", 2000);
-  addSection("drekkana", "Drekkana (D3) — Siblings, Courage, Valour", 1500);
-  addSection("dashamsha", "Dashamsha (D10) — Career, Profession, Public Life", 1500);
-  addSection("saptamsha", "Saptamsha (D7) — Children, Progeny", 1500);
+  // ==================== DIVISIONAL CHARTS (VARGAS) — COMPLETE SET ====================
   addSection("hora", "Hora (D2) — Wealth, Finances", 1000);
+  addSection("drekkana", "Drekkana (D3) — Siblings, Courage, Valour", 1500);
+  addSection("saptamsha", "Saptamsha (D7) — Children, Progeny", 1500);
+  addSection("navamsha", "Navamsha (D9) — Dharma, Marriage, Spiritual Life", 2000);
+  addSection("dashamsha", "Dashamsha (D10) — Career, Profession, Public Life", 1500);
+  addSection("dwadashamsha", "Dwadashamsha (D12) — Parents, Ancestry, Lineage", 1500);
+  addSection("shodashamsha", "Shodashamsha (D16) — Vehicles, Comforts, Luxuries", 1500);
+  addSection("vimshamsha", "Vimshamsha (D20) — Spiritual Progress, Upasana", 1500);
+  addSection("trimshamsha", "Trimshamsha (D30) — Misfortunes, Evil, Inauspiciousness", 1500);
+  addSection("shashtyamsha", "Shashtyamsha (D60) — Past Life Karma, Overall Assessment", 1500);
 
   // ==================== TRANSIT / GOCHARA ====================
   const transitSummary = extractTransitSummary(data.transitPlanetData, data.allPlanetData);
@@ -351,10 +369,19 @@ function formatAstroContext(data: Record<string, any>): string {
   // ==================== HOROSCOPE PREDICTIONS ====================
   addSection("horoscopePredictions", "Horoscope Predictions (Classical Rule-Based)", 4000);
 
-  // ==================== PANCHANGA ====================
+  // ==================== PANCHANGA (BIRTH) ====================
+  addSection("panchangaTable", "Full Panchanga at Birth (Tithi, Nakshatra, Yoga, Karana, Vara)", 2000);
   addSection("nithyaYoga", "Nithya Yoga (Birth Yoga)", 500);
   addSection("karana", "Karana (Half Lunar Day)", 500);
   addSection("lunarDay", "Lunar Day (Tithi)", 500);
+  addSection("panchaka", "Panchaka Status at Birth", 500);
+
+  // ==================== MUHURTA / TIMING ====================
+  addSection("currentPanchanga", "Current Panchanga (for Muhurta/Electional Timing)", 2000);
+  addSection("currentPanchaka", "Current Panchaka Status", 500);
+
+  // ==================== PANCHA PAKSHI ====================
+  addSection("panchaPakshiBird", "Pancha Pakshi Birth Bird", 500);
 
   return context;
 }
@@ -376,9 +403,10 @@ function buildSystemPrompt(astroContext: string, ragContext: string): string {
 - Exaltation (Uchcha) and Debilitation (Neecha) status
 - Panchanga: Tithi, Nakshatra, Yoga, Karana, Vara
 - Transit/Gochara — current planetary positions relative to natal chart
-- Divisional charts (Vargas): D1 (Rashi), D2 (Hora), D3 (Drekkana), D7 (Saptamsha), D9 (Navamsha), D10 (Dashamsha)
-- Muhurta (auspicious timing)
-- Compatibility analysis (Kundali matching)
+- ALL 10 divisional charts: D1, D2, D3, D7, D9, D10, D12, D16, D20, D30, D60
+- Muhurta (electional astrology) — current panchanga, panchaka for timing decisions
+- Pancha Pakshi — birth bird determination for activity timing
+- Kundali matching / compatibility (Ashtakoot guna matching via MatchReport)
 - Remedial measures (gemstones, mantras, pujas)
 
 ## Data Available from VedAstro Calculate Library
@@ -399,15 +427,28 @@ You have access to comprehensive chart data computed by VedAstro's C# calculatio
 - **Vimshottari Dasha**: Current Mahadasha > Antardasha > Pratyantardasha with dates
 - **Transit/Gochara**: Current real-time planetary positions — which signs planets are transiting NOW, compared to natal positions. Use this for timing predictions and current period analysis.
 
-### Divisional Charts (Vargas)
-- **Navamsha (D9)**: Marriage, dharma, spiritual life — planet signs in the 9th divisional chart
-- **Dashamsha (D10)**: Career, profession, public life
+### Divisional Charts (Vargas) — Complete Shodash Varga
+- **Hora (D2)**: Wealth, finances
 - **Drekkana (D3)**: Siblings, courage, valour
 - **Saptamsha (D7)**: Children, progeny
-- **Hora (D2)**: Wealth, finances
+- **Navamsha (D9)**: Marriage, dharma, spiritual life
+- **Dashamsha (D10)**: Career, profession, public life
+- **Dwadashamsha (D12)**: Parents, ancestry, lineage
+- **Shodashamsha (D16)**: Vehicles, comforts, luxuries
+- **Vimshamsha (D20)**: Spiritual progress, upasana
+- **Trimshamsha (D30)**: Misfortunes, evil, inauspicious influences
+- **Shashtyamsha (D60)**: Past life karma, overall life assessment
+
+### Muhurta & Electional Astrology
+- **Current Panchanga**: Real-time Tithi, Nakshatra, Yoga, Karana, Vara for muhurta timing
+- **Panchaka**: Current panchaka status (inauspicious period check)
+- **Pancha Pakshi**: Birth bird — for activity timing (ruling, eating, walking, sleeping, dying phases)
+
+### Compatibility / Kundali Matching
+- **MatchReport**: Ashtakoot guna matching between two birth charts (available via separate compatibility feature)
 
 ### Panchanga & Predictions
-- **Panchanga**: Tithi, Nithya Yoga, Karana at time of birth
+- **Birth Panchanga**: Full panchanga at time of birth (Tithi, Nakshatra, Yoga, Karana, Vara)
 - **Horoscope Predictions**: Pre-computed prediction texts from classical rules
 
 ## Reasoning Approach
@@ -419,9 +460,10 @@ When answering questions:
 5. Examine **Ashtakavarga** points for sign-level benefic/malefic assessment
 6. Consider the current **Vimshottari Dasha** period and its lord's natal condition
 7. Analyze **Transit/Gochara** — where are planets NOW vs. natal positions? Which natal houses are being transited?
-8. Check relevant **Divisional Charts** (D9 for marriage questions, D10 for career, D7 for children, D2 for wealth)
-9. Look for yogas and apply classical rules
-10. Provide interpretations with classical references and suggest remedies
+8. Check relevant **Divisional Charts**: D9 marriage, D10 career, D7 children, D2 wealth, D12 parents, D16 vehicles/comforts, D20 spirituality, D30 misfortunes, D60 past karma
+9. For timing questions, check **Current Panchanga** (muhurta), **Panchaka** status, and **Pancha Pakshi** bird phase
+10. Look for yogas and apply classical rules
+11. Provide interpretations with classical references and suggest remedies
 
 ## Response Style
 - Be warm, compassionate, and encouraging
@@ -430,7 +472,9 @@ When answering questions:
 - Quote specific Shadbala strength values and Ashtakavarga bindu counts to support your analysis
 - Mention retrograde/combust status when analyzing a planet
 - Always reference the current Dasha period AND current transits when discussing timing
-- Use divisional charts to go deeper on specific life areas (D9 for marriage, D10 for career)
+- Use divisional charts to go deeper on specific life areas (D9 for marriage, D10 for career, D12 for parents, D16 for vehicles, D20 for spiritual progress, D30 for calamities, D60 for past karma)
+- When asked about timing/muhurta, reference current panchanga (tithi, nakshatra, yoga, karana, vara) and panchaka status
+- Reference Pancha Pakshi birth bird when discussing activity timing
 - Always clarify that astrology provides guidance, not deterministic predictions
 - Format responses with clear sections using markdown
 
@@ -815,6 +859,39 @@ ${ragContext ? `\nReference material:\n${ragContext}` : ""}`,
     } catch (e: any) {
       console.error("SearchLocation error:", e);
       res.json([]);
+    }
+  });
+
+  // ====== KUNDALI MATCHING / COMPATIBILITY ======
+  app.post("/api/vedastro/match", async (req: Request, res: Response) => {
+    try {
+      const { male, female } = req.body;
+      if (!male || !female) {
+        return res.status(400).json({ error: "Both male and female birth details required" });
+      }
+
+      // Build time-location strings for both persons
+      const maleTimeLocStr = buildTimeLocStr(male.birthTime, male.birthDate, male.timezone, male.locationName);
+      const femaleTimeLocStr = buildTimeLocStr(female.birthTime, female.birthDate, female.timezone, female.locationName);
+
+      // Call VedAstro MatchReport API
+      const url = `${VEDASTRO_API}/Calculate/MatchReport/${maleTimeLocStr}/${femaleTimeLocStr}`;
+      console.log(`VedAstro MatchReport: ${url}`);
+
+      const resp = await fetch(url, { signal: AbortSignal.timeout(30000) });
+      if (!resp.ok) {
+        return res.status(502).json({ error: `VedAstro API returned ${resp.status}` });
+      }
+
+      const data = await resp.json();
+      if (data?.Status !== "Pass") {
+        return res.status(502).json({ error: data?.Payload || "VedAstro match calculation failed" });
+      }
+
+      res.json(data.Payload);
+    } catch (e: any) {
+      console.error("Match API error:", e);
+      res.status(400).json({ error: e.message });
     }
   });
 
