@@ -169,13 +169,23 @@ The build outputs to `dist/` — `index.cjs` (server) and `public/` (static fron
 
 ## VedAstro API Integration
 
-The app calls three VedAstro endpoints per chat message (when a birth profile is selected):
+The app calls 11 VedAstro endpoints per chat message (when a birth profile is selected), mapping to the [C# Calculate library](https://github.com/VedAstro/VedAstro/tree/master/Library/Logic/Calculate):
 
-1. **AllPlanetData** — All planetary positions (signs, degrees, nakshatras)
-2. **AllHouseData** — House cusps and occupants
-3. **HoroscopePredictions** — Pre-computed horoscope prediction texts
+| Endpoint | Source File | Description |
+|----------|------------|-------------|
+| AllPlanetData | Core.cs | Planetary positions (signs, degrees, nakshatras) |
+| AllHouseData | Core.cs | House cusps, lords, and occupants |
+| HoroscopePredictions | Core.cs | Pre-computed horoscope prediction texts |
+| AllPlanetStrength | Core.cs | Shadbala (six-fold strength) for all planets |
+| AllPlanetOrderedByStrength | Core.cs | Planets ranked strongest to weakest |
+| SarvashtakavargaChart | Ashtakavarga.cs | Total benefic points per sign (all planets) |
+| BhinnashtakavargaChart | Ashtakavarga.cs | Individual planet bindus per sign |
+| DasaForNow | VimshottariDasa.cs | Current Mahadasha > Antardasha > Pratyantardasha |
+| NithyaYoga | Core.cs | Birth yoga (Panchanga element) |
+| Karana | Core.cs | Half lunar day (Panchanga element) |
+| LunarDay | Core.cs | Tithi (Panchanga element) |
 
-URL format: `https://vedastroapi.azurewebsites.net/api/Calculate/{Method}/Location/{City}/Time/{HH:MM}/{DD}/{MM}/{YYYY}/{timezone}`
+URL format: `https://api.vedastro.org/api/Calculate/{Method}/Location/{City}/Time/{HH:MM}/{DD}/{MM}/{YYYY}/{timezone}`
 
 API key: `FreeAPIUser` (public access, no registration needed)
 

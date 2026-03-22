@@ -7,8 +7,8 @@ import {
   insertConversationSchema,
 } from "@shared/schema";
 
-// VedAstro API base URL
-const VEDASTRO_API = "https://vedastroapi.azurewebsites.net/api";
+// VedAstro API base URL (api.vedastro.org is the primary, reliable endpoint)
+const VEDASTRO_API = "https://api.vedastro.org/api";
 
 // Anthropic model — use env var or default to claude-sonnet-4-6
 const LLM_MODEL = process.env.LLM_MODEL || "claude-sonnet-4-6";
@@ -42,11 +42,29 @@ async function fetchVedAstroData(
 
   const results: Record<string, any> = {};
 
-  // Fetch multiple data points in parallel
+  // Comprehensive VedAstro API endpoints — maps to C# Calculate library
+  // Source: https://github.com/VedAstro/VedAstro/tree/master/Library/Logic/Calculate
   const endpoints = [
+    // === Core planetary & house data (Core.cs) ===
     { key: "allPlanetData", url: `Calculate/AllPlanetData/PlanetName/All/${timeLocStr}` },
     { key: "allHouseData", url: `Calculate/AllHouseData/HouseName/All/${timeLocStr}` },
     { key: "horoscopePredictions", url: `Calculate/HoroscopePredictions/${timeLocStr}` },
+
+    // === Shadbala — planetary & house strength (Core.cs) ===
+    { key: "allPlanetStrength", url: `Calculate/AllPlanetStrength/${timeLocStr}` },
+    { key: "allPlanetOrderedByStrength", url: `Calculate/AllPlanetOrderedByStrength/${timeLocStr}` },
+
+    // === Ashtakavarga (Ashtakavarga.cs) ===
+    { key: "sarvashtakavarga", url: `Calculate/SarvashtakavargaChart/${timeLocStr}` },
+    { key: "bhinnashtakavarga", url: `Calculate/BhinnashtakavargaChart/${timeLocStr}` },
+
+    // === Vimshottari Dasha — current period (VimshottariDasa.cs) ===
+    { key: "dasaForNow", url: `Calculate/DasaForNow/${timeLocStr}/Levels/3` },
+
+    // === Yoga & day quality (Core.cs) ===
+    { key: "nithyaYoga", url: `Calculate/NithyaYoga/${timeLocStr}` },
+    { key: "karana", url: `Calculate/Karana/${timeLocStr}` },
+    { key: "lunarDay", url: `Calculate/LunarDay/${timeLocStr}` },
   ];
 
   await Promise.allSettled(
@@ -70,71 +88,90 @@ async function fetchVedAstroData(
   return results;
 }
 
-// Format astro data for LLM context
+// Format astro data for LLM context — includes all VedAstro Calculate library data
 function formatAstroContext(data: Record<string, any>): string {
-  let context = "## Vedic Astrology Chart Data\n\n";
+  let context = "## Vedic Astrology Chart Data (from VedAstro Calculate Library)\n\n";
 
-  if (data.allPlanetData) {
-    context += "### Planetary Positions\n";
+  // Helper to safely extract payload and stringify
+  function addSection(key: string, title: string, maxLen: number) {
+    if (!data[key]) return;
+    context += `### ${title}\n`;
     try {
-      const payload = data.allPlanetData?.Payload || data.allPlanetData;
+      const payload = data[key]?.Payload || data[key];
       if (typeof payload === "object") {
-        context += JSON.stringify(payload, null, 2).substring(0, 3000);
+        context += JSON.stringify(payload, null, 2).substring(0, maxLen);
       }
     } catch { context += "(data available)\n"; }
     context += "\n\n";
   }
 
-  if (data.allHouseData) {
-    context += "### House Data\n";
-    try {
-      const payload = data.allHouseData?.Payload || data.allHouseData;
-      if (typeof payload === "object") {
-        context += JSON.stringify(payload, null, 2).substring(0, 2000);
-      }
-    } catch { context += "(data available)\n"; }
-    context += "\n\n";
-  }
+  // Core chart data
+  addSection("allPlanetData", "Planetary Positions (Rashi, Degrees, Nakshatra)", 4000);
+  addSection("allHouseData", "House Data (Bhavas)", 3000);
+  addSection("horoscopePredictions", "Horoscope Predictions", 4000);
 
-  if (data.horoscopePredictions) {
-    context += "### Horoscope Predictions\n";
-    try {
-      const payload = data.horoscopePredictions?.Payload || data.horoscopePredictions;
-      if (typeof payload === "object") {
-        context += JSON.stringify(payload, null, 2).substring(0, 3000);
-      }
-    } catch { context += "(data available)\n"; }
-    context += "\n\n";
-  }
+  // Shadbala — planetary strength analysis (from Core.cs)
+  addSection("allPlanetStrength", "Shadbala — Planetary Strength Values", 2000);
+  addSection("allPlanetOrderedByStrength", "Planets Ordered by Strength (Strongest to Weakest)", 1000);
+
+  // Ashtakavarga (from Ashtakavarga.cs)
+  addSection("sarvashtakavarga", "Sarvashtakavarga Chart (Total Benefic Points per Sign)", 2000);
+  addSection("bhinnashtakavarga", "Bhinnashtakavarga Chart (Individual Planet Bindus)", 2000);
+
+  // Vimshottari Dasha (from VimshottariDasa.cs)
+  addSection("dasaForNow", "Current Vimshottari Dasha Period (Mahadasha > Antardasha > Pratyantardasha)", 2000);
+
+  // Panchanga elements (from Core.cs)
+  addSection("nithyaYoga", "Nithya Yoga (Birth Yoga)", 500);
+  addSection("karana", "Karana (Half Lunar Day)", 500);
+  addSection("lunarDay", "Lunar Day (Tithi)", 500);
 
   return context;
 }
 
 // Build system prompt for the LLM
 function buildSystemPrompt(astroContext: string, ragContext: string): string {
-  return `You are JyotishGPT, an expert Vedic Astrologer AI assistant. You provide insightful, compassionate, and accurate Vedic astrology readings and guidance.
+  return `You are JyotishGPT, an expert Vedic Astrologer AI assistant powered by the VedAstro calculation engine. You provide insightful, compassionate, and accurate Vedic astrology readings and guidance.
 
 ## Your Expertise
 - Deep knowledge of Vedic astrology (Jyotish Shastra)
 - Planetary positions, houses, signs, nakshatras, dashas
+- Shadbala (six-fold strength) analysis for each planet
+- Ashtakavarga — Sarvashtakavarga and Bhinnashtakavarga point analysis
+- Vimshottari Dasha — current Mahadasha, Antardasha, and Pratyantardasha periods
 - Yogas, doshas, and their effects
+- Panchanga: Tithi, Nakshatra, Yoga, Karana, Vara
 - Muhurta (auspicious timing)
+- Divisional charts (Vargas): D1 through D60
 - Compatibility analysis (Kundali matching)
 - Remedial measures (gemstones, mantras, pujas)
 
+## Data Available from VedAstro Calculate Library
+You have access to comprehensive chart data computed by VedAstro's C# calculation engine:
+- **Planetary Positions**: Sign, degree, nakshatra, pada for all 9 planets + nodes
+- **House Data**: All 12 bhavas with lords and occupants
+- **Shadbala**: Numerical strength values showing which planets are strongest/weakest
+- **Ashtakavarga**: Sarvashtakavarga (total points per sign) and Bhinnashtakavarga (individual planet bindus)
+- **Vimshottari Dasha**: Current Mahadasha > Antardasha > Pratyantardasha with dates
+- **Panchanga**: Tithi, Nithya Yoga, Karana at time of birth
+- **Horoscope Predictions**: Pre-computed prediction texts from classical rules
+
 ## Reasoning Approach
 When answering questions:
-1. First analyze the chart data available
-2. Identify relevant planetary positions and house placements
-3. Look for yogas, aspects, and conjunctions
-4. Consider dasha periods and transits
-5. Provide interpretations with classical references
-6. Suggest remedies when appropriate
+1. First analyze the chart data — planetary positions, strengths, and house placements
+2. Check Shadbala to identify strong and weak planets
+3. Examine Ashtakavarga points for sign-level benefic/malefic assessment
+4. Consider the current Vimshottari Dasha period and its lord
+5. Look for yogas, aspects, and conjunctions
+6. Provide interpretations with classical references
+7. Suggest remedies when appropriate
 
 ## Response Style
 - Be warm, compassionate, and encouraging
 - Use proper Vedic astrology terminology with explanations
-- Reference classical texts when possible (Brihat Parashara Hora Shastra, Phaladeepika, etc.)
+- Reference classical texts when possible (Brihat Parashara Hora Shastra, Phaladeepika, Jataka Parijata, etc.)
+- Quote specific Shadbala strength values and Ashtakavarga bindu counts to support your analysis
+- Always mention the current Dasha period and its effects when relevant
 - Always clarify that astrology provides guidance, not deterministic predictions
 - Format responses with clear sections using markdown
 
@@ -142,7 +179,7 @@ ${astroContext ? `## Birth Chart Data Available\n${astroContext}` : "## No birth
 
 ${ragContext ? `## Reference Knowledge from Uploaded Books\n${ragContext}` : ""}
 
-Remember: Analyze the birth chart data thoroughly and provide detailed, personalized insights. Use chain-of-thought reasoning to explain your analysis step by step.`;
+Remember: Analyze ALL available chart data thoroughly — Shadbala, Ashtakavarga, Dasha, and Panchanga — to provide detailed, personalized, and data-backed insights. Use chain-of-thought reasoning to explain your analysis step by step.`;
 }
 
 export async function registerRoutes(
@@ -288,11 +325,13 @@ export async function registerRoutes(
         const thinkingResponse = await client.messages.create({
           model: LLM_MODEL,
           max_tokens: 1024,
-          system: `You are a Vedic astrology reasoning engine. Given the user's question and available chart data, think through the analysis step by step. Be concise but thorough. Focus on:
-1. Which planetary positions are relevant
-2. What yogas or aspects apply
-3. What dasha periods might be active
-4. Classical text references
+          system: `You are a Vedic astrology reasoning engine powered by VedAstro calculations. Given the user's question and available chart data, think through the analysis step by step. Be concise but thorough. Focus on:
+1. Which planetary positions are relevant and their Shadbala strength values
+2. Ashtakavarga bindu counts for the relevant signs/houses
+3. Current Vimshottari Dasha period and its lord's condition
+4. What yogas or aspects apply
+5. Panchanga factors (Tithi, Yoga, Karana) if relevant
+6. Classical text references (BPHS, Phaladeepika, Jataka Parijata)
 
 ${astroContext}
 ${ragContext ? `\nReference material:\n${ragContext}` : ""}`,
