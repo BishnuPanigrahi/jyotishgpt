@@ -10,6 +10,9 @@ import {
 // VedAstro API base URL
 const VEDASTRO_API = "https://vedastroapi.azurewebsites.net/api";
 
+// Anthropic model — use env var or default to claude-sonnet-4-6
+const LLM_MODEL = process.env.LLM_MODEL || "claude-sonnet-4-6";
+
 function getVisitorId(req: Request): string {
   return req.headers["x-visitor-id"] as string || "default-visitor";
 }
@@ -283,7 +286,7 @@ export async function registerRoutes(
       let reasoning = "";
       try {
         const thinkingResponse = await client.messages.create({
-          model: "claude_sonnet_4_6",
+          model: LLM_MODEL,
           max_tokens: 1024,
           system: `You are a Vedic astrology reasoning engine. Given the user's question and available chart data, think through the analysis step by step. Be concise but thorough. Focus on:
 1. Which planetary positions are relevant
@@ -303,16 +306,23 @@ ${ragContext ? `\nReference material:\n${ragContext}` : ""}`,
 
         // Send reasoning as SSE event
         res.write(`data: ${JSON.stringify({ type: "reasoning", content: reasoning })}\n\n`);
-      } catch (e) {
-        console.error("Reasoning step error:", e);
+      } catch (e: any) {
+        console.error("Reasoning step error:", e?.message || e);
         reasoning = "Direct analysis mode.";
+        // If API key is missing or invalid, surface the error immediately
+        if (e?.status === 401 || e?.message?.includes("API key") || e?.message?.includes("authentication")) {
+          res.write(`data: ${JSON.stringify({ type: "content", content: "Error: Anthropic API key is missing or invalid. Please set the ANTHROPIC_API_KEY environment variable with a valid key from https://console.anthropic.com/" })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+          res.end();
+          return;
+        }
       }
 
       // Step 2: Stream the main response
       let fullResponse = "";
       try {
         const stream = client.messages.stream({
-          model: "claude_sonnet_4_6",
+          model: LLM_MODEL,
           max_tokens: 2048,
           system: systemPrompt + `\n\n## Your Internal Reasoning\n${reasoning}`,
           messages: llmMessages,
@@ -326,8 +336,13 @@ ${ragContext ? `\nReference material:\n${ragContext}` : ""}`,
           }
         }
       } catch (e: any) {
-        console.error("Streaming error:", e);
-        fullResponse = "I apologize, but I encountered an issue generating the response. Please try again.";
+        console.error("Streaming error:", e?.message || e);
+        const errMsg = e?.status === 401
+          ? "Error: Invalid Anthropic API key. Please check your ANTHROPIC_API_KEY."
+          : e?.status === 429
+          ? "Error: Rate limit reached. Please wait a moment and try again."
+          : `I apologize, but I encountered an issue: ${e?.message || "Unknown error"}. Please try again.`;
+        fullResponse = errMsg;
         res.write(`data: ${JSON.stringify({ type: "content", content: fullResponse })}\n\n`);
       }
 

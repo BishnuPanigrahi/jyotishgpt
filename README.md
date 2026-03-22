@@ -82,6 +82,7 @@ Open [http://localhost:5000](http://localhost:5000) in your browser.
 | `PORT` | No | `5000` | Server port |
 | `NODE_ENV` | No | `development` | Set to `production` for optimized builds |
 | `DATA_DIR` | No | `.` (current dir) | Directory for SQLite database (set to `/app/data` in Docker) |
+| `LLM_MODEL` | No | `claude-sonnet-4-6` | Anthropic model ID (e.g. `claude-haiku-4-5` for lower cost) |
 
 ## Deployment
 
