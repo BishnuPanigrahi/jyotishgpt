@@ -1,0 +1,35 @@
+# ============================================================
+# JyotishGPT - Docker Compose for local development & production
+# ============================================================
+# Usage:
+#   Development:  docker compose up --build
+#   Production:   docker compose -f docker-compose.yml up -d
+# ============================================================
+
+services:
+  jyotishgpt:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jyotishgpt
+    ports:
+      - "${PORT:-5000}:5000"
+    environment:
+      - NODE_ENV=production
+      - PORT=5000
+      - DATA_DIR=/app/data
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    volumes:
+      # Persist SQLite database across container restarts
+      - jyotishgpt-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5000/api/profiles"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  jyotishgpt-data:
+    driver: local

@@ -418,6 +418,54 @@ ${ragContext ? `\nReference material:\n${ragContext}` : ""}`,
     }
   });
 
+  // ====== VEDASTRO LOCATION SEARCH ======
+  // Auto-resolve birth place to coordinates using VedAstro's SearchLocation API
+  app.get("/api/vedastro/search-location", async (req: Request, res: Response) => {
+    try {
+      const address = req.query.q as string;
+      if (!address || address.length < 2) {
+        return res.json([]);
+      }
+      // SearchLocation uses the api.vedastro.org endpoint (different from calculation API)
+      const url = `https://api.vedastro.org/api/Calculate/SearchLocation/address/${encodeURIComponent(address)}`;
+      console.log(`VedAstro SearchLocation: ${url}`);
+      const resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (!resp.ok) {
+        return res.json([]);
+      }
+      const data = await resp.json();
+      // VedAstro returns locations in Payload.SearchLocation
+      const locations = data?.Payload?.SearchLocation || data?.Payload || [];
+      res.json(Array.isArray(locations) ? locations : []);
+    } catch (e: any) {
+      console.error("SearchLocation error:", e);
+      res.json([]);
+    }
+  });
+
+  // ====== VEDASTRO TIMEZONE LOOKUP ======
+  app.get("/api/vedastro/timezone", async (req: Request, res: Response) => {
+    try {
+      const { lat, lng, date, time } = req.query;
+      if (!lat || !lng) {
+        return res.status(400).json({ error: "lat and lng required" });
+      }
+      const locationStr = `Location/Unknown/Coordinates/${lat},${lng}`;
+      const timeStr = time && date ? `Time/${time}/${date}/+00:00` : `Time/12:00/01/01/2000/+00:00`;
+      const url = `https://api.vedastro.org/api/Calculate/GeoLocationToTimezone/${locationStr}/${timeStr}`;
+      console.log(`VedAstro Timezone: ${url}`);
+      const resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      if (!resp.ok) {
+        return res.json({ timezone: "+00:00" });
+      }
+      const data = await resp.json();
+      res.json(data?.Payload || data);
+    } catch (e: any) {
+      console.error("Timezone lookup error:", e);
+      res.json({ timezone: "+00:00" });
+    }
+  });
+
   return httpServer;
 }
 

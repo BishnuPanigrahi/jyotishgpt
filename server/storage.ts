@@ -8,8 +8,17 @@ import {
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
 import { eq, desc } from "drizzle-orm";
+import { existsSync, mkdirSync } from "fs";
+import { dirname } from "path";
 
-const sqlite = new Database("data.db");
+// Use DATA_DIR env var for Docker volume mount, default to current directory
+const dataDir = process.env.DATA_DIR || ".";
+if (dataDir !== "." && !existsSync(dataDir)) {
+  mkdirSync(dataDir, { recursive: true });
+}
+const dbPath = dataDir === "." ? "data.db" : `${dataDir}/data.db`;
+
+const sqlite = new Database(dbPath);
 sqlite.pragma("journal_mode = WAL");
 
 export const db = drizzle(sqlite);

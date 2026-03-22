@@ -1,0 +1,22 @@
+# Render Blueprint - render.yaml
+# See https://docs.render.com/blueprint-spec
+services:
+  - type: web
+    name: jyotishgpt
+    runtime: node
+    region: oregon
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: node dist/index.cjs
+    healthCheckPath: /api/profiles
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "5000"
+      - key: ANTHROPIC_API_KEY
+        sync: false  # Must be set manually in Render dashboard
+    disk:
+      name: jyotishgpt-data
+      mountPath: /app/data
+      sizeGB: 1
