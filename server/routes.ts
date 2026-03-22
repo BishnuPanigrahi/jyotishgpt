@@ -2,10 +2,15 @@ import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { Anthropic } from "@anthropic-ai/sdk";
+import multer from "multer";
+import pdfParse from "pdf-parse";
 import {
   insertBirthProfileSchema,
   insertConversationSchema,
 } from "@shared/schema";
+
+// Multer config for file uploads (in-memory, 20MB limit)
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 // VedAstro API base URL (api.vedastro.org is the primary, reliable endpoint)
 const VEDASTRO_API = "https://api.vedastro.org/api";
@@ -17,8 +22,62 @@ function getVisitorId(req: Request): string {
   return req.headers["x-visitor-id"] as string || "default-visitor";
 }
 
+// Simple in-memory cache for VedAstro API responses
+// Birth chart data is immutable (same birth = same chart), so we cache aggressively.
+// Transit data is cached for 1 hour (planetary transits don't change that fast).
+const vedAstroCache = new Map<string, { data: any; timestamp: number }>();
+const NATAL_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours for natal data
+const TRANSIT_CACHE_TTL = 60 * 60 * 1000;     // 1 hour for transit data
+
+function getCached(key: string, ttl: number): any | null {
+  const entry = vedAstroCache.get(key);
+  if (entry && Date.now() - entry.timestamp < ttl) {
+    return entry.data;
+  }
+  vedAstroCache.delete(key);
+  return null;
+}
+
+function setCache(key: string, data: any): void {
+  vedAstroCache.set(key, { data, timestamp: Date.now() });
+  // Prevent unbounded growth — evict oldest entries if cache gets too large
+  if (vedAstroCache.size > 200) {
+    const oldest = vedAstroCache.keys().next().value;
+    if (oldest) vedAstroCache.delete(oldest);
+  }
+}
+
+// Helper: build time+location URL segment for VedAstro API
+function buildTimeLocStr(
+  time: string,    // "HH:MM"
+  date: string,    // "DD/MM/YYYY"
+  timezone: string,// "+05:30"
+  locationName: string
+): string {
+  const dateParts = date.split("/");
+  const dd = dateParts[0];
+  const mm = dateParts[1];
+  const yyyy = dateParts[2];
+  const loc = encodeURIComponent(locationName.replace(/\s+/g, ""));
+  return `Location/${loc}/Time/${time}/${dd}/${mm}/${yyyy}/${timezone}`;
+}
+
+// Helper: get current time formatted for VedAstro transit calls
+function getCurrentTimeForTransit(locationName: string, timezone: string): string {
+  const now = new Date();
+  // Convert to timezone offset hours/minutes
+  const hh = String(now.getUTCHours()).padStart(2, "0");
+  const min = String(now.getUTCMinutes()).padStart(2, "0");
+  const dd = String(now.getUTCDate()).padStart(2, "0");
+  const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const yyyy = String(now.getUTCFullYear());
+  const loc = encodeURIComponent(locationName.replace(/\s+/g, ""));
+  return `Location/${loc}/Time/${hh}:${min}/${dd}/${mm}/${yyyy}/+00:00`;
+}
+
 // Fetch astro data from VedAstro Open API
 // URL format: /api/Calculate/{Method}/Location/{City}/Time/{HH:MM}/{DD}/{MM}/{YYYY}/{timezone}
+// Includes: natal chart, divisional charts (vargas), transit positions, Shadbala, Ashtakavarga, Dasha, Panchanga
 async function fetchVedAstroData(
   birthTime: string, // "HH:MM"
   birthDate: string, // "DD/MM/YYYY"
@@ -27,68 +86,215 @@ async function fetchVedAstroData(
   longitude: string,
   latitude: string
 ): Promise<Record<string, any>> {
-  // Parse time and date for URL construction
-  const time = birthTime; // HH:MM
-  const dateParts = birthDate.split("/"); // DD/MM/YYYY
-  const dd = dateParts[0];
-  const mm = dateParts[1];
-  const yyyy = dateParts[2];
-  const tz = timezone; // e.g. +05:30
-
-  // Location name cleaned for URL
-  const loc = encodeURIComponent(locationName.replace(/\s+/g, ""));
-
-  const timeLocStr = `Location/${loc}/Time/${time}/${dd}/${mm}/${yyyy}/${tz}`;
+  const timeLocStr = buildTimeLocStr(birthTime, birthDate, timezone, locationName);
+  const transitTimeLocStr = getCurrentTimeForTransit(locationName, timezone);
 
   const results: Record<string, any> = {};
 
   // Comprehensive VedAstro API endpoints — maps to C# Calculate library
   // Source: https://github.com/VedAstro/VedAstro/tree/master/Library/Logic/Calculate
   const endpoints = [
-    // === Core planetary & house data (Core.cs) ===
+    // ===== NATAL CHART (D1 — Rashi) =====
+    // Core planetary data: positions, signs, nakshatras, conjunctions, aspects,
+    // retrograde status, combustion, exaltation, debilitation, and more
     { key: "allPlanetData", url: `Calculate/AllPlanetData/PlanetName/All/${timeLocStr}` },
     { key: "allHouseData", url: `Calculate/AllHouseData/HouseName/All/${timeLocStr}` },
     { key: "horoscopePredictions", url: `Calculate/HoroscopePredictions/${timeLocStr}` },
 
-    // === Shadbala — planetary & house strength (Core.cs) ===
+    // ===== SHADBALA — Planetary & House Strength (Core.cs) =====
     { key: "allPlanetStrength", url: `Calculate/AllPlanetStrength/${timeLocStr}` },
     { key: "allPlanetOrderedByStrength", url: `Calculate/AllPlanetOrderedByStrength/${timeLocStr}` },
 
-    // === Ashtakavarga (Ashtakavarga.cs) ===
+    // ===== ASHTAKAVARGA (Ashtakavarga.cs) =====
     { key: "sarvashtakavarga", url: `Calculate/SarvashtakavargaChart/${timeLocStr}` },
     { key: "bhinnashtakavarga", url: `Calculate/BhinnashtakavargaChart/${timeLocStr}` },
 
-    // === Vimshottari Dasha — current period (VimshottariDasa.cs) ===
+    // ===== VIMSHOTTARI DASHA (VimshottariDasa.cs) =====
     { key: "dasaForNow", url: `Calculate/DasaForNow/${timeLocStr}/Levels/3` },
 
-    // === Yoga & day quality (Core.cs) ===
+    // ===== PANCHANGA (Core.cs) =====
     { key: "nithyaYoga", url: `Calculate/NithyaYoga/${timeLocStr}` },
     { key: "karana", url: `Calculate/Karana/${timeLocStr}` },
     { key: "lunarDay", url: `Calculate/LunarDay/${timeLocStr}` },
+
+    // ===== DIVISIONAL CHARTS / VARGAS (Vargas.cs) =====
+    { key: "navamsha", url: `Calculate/AllPlanetNavamshaSign/${timeLocStr}` },        // D9 — Marriage, dharma, spiritual life
+    { key: "drekkana", url: `Calculate/AllPlanetDrekkanaSign/${timeLocStr}` },        // D3 — Siblings, courage, valour
+    { key: "dashamsha", url: `Calculate/AllPlanetDashamamshaSign/${timeLocStr}` },    // D10 — Career, profession, public life
+    { key: "saptamsha", url: `Calculate/AllPlanetSaptamshaSign/${timeLocStr}` },      // D7 — Children, progeny
+    { key: "hora", url: `Calculate/AllPlanetHoraSign/${timeLocStr}` },                // D2 — Wealth, finances
+
+    // ===== TRANSIT / GOCHARA — Current planetary positions =====
+    // Uses current time to show where planets are NOW relative to birth chart
+    { key: "transitPlanetData", url: `Calculate/AllPlanetData/PlanetName/All/${transitTimeLocStr}` },
   ];
 
-  await Promise.allSettled(
-    endpoints.map(async (ep) => {
-      try {
-        const url = `${VEDASTRO_API}/${ep.url}`;
-        console.log(`VedAstro API call: ${url}`);
-        const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
-        if (resp.ok) {
-          const data = await resp.json();
-          results[ep.key] = data;
-        } else {
-          console.error(`VedAstro API ${ep.key} returned ${resp.status}`);
-        }
-      } catch (e) {
-        console.error(`VedAstro API error for ${ep.key}:`, e);
+  // Cache key prefix for this birth profile
+  const cachePrefix = `${locationName}|${birthTime}|${birthDate}|${timezone}`;
+
+  // Check cache for each endpoint first
+  const uncachedEndpoints: typeof endpoints = [];
+  for (const ep of endpoints) {
+    const isTransit = ep.key === 'transitPlanetData';
+    const ttl = isTransit ? TRANSIT_CACHE_TTL : NATAL_CACHE_TTL;
+    const cacheKey = isTransit ? `transit|${locationName}` : `${cachePrefix}|${ep.key}`;
+    const cached = getCached(cacheKey, ttl);
+    if (cached) {
+      results[ep.key] = cached;
+    } else {
+      uncachedEndpoints.push(ep);
+    }
+  }
+
+  if (uncachedEndpoints.length > 0) {
+    console.log(`VedAstro: ${endpoints.length - uncachedEndpoints.length} cached, ${uncachedEndpoints.length} to fetch`);
+
+    // Fetch uncached endpoints with rate-limit-aware batching
+    // VedAstro free tier: 5 calls/min. Batch in groups of 4 with 62s delay.
+    const batchSize = 4;
+    for (let i = 0; i < uncachedEndpoints.length; i += batchSize) {
+      const batch = uncachedEndpoints.slice(i, i + batchSize);
+      await Promise.allSettled(
+        batch.map(async (ep) => {
+          try {
+            const url = `${VEDASTRO_API}/${ep.url}`;
+            console.log(`VedAstro API [batch ${Math.floor(i / batchSize) + 1}]: ${ep.key}`);
+            const resp = await fetch(url, { signal: AbortSignal.timeout(25000) });
+            if (resp.ok) {
+              const data = await resp.json();
+              if (data?.Status === "Pass") {
+                results[ep.key] = data;
+                // Cache the result
+                const isTransit = ep.key === 'transitPlanetData';
+                const cacheKey = isTransit ? `transit|${locationName}` : `${cachePrefix}|${ep.key}`;
+                setCache(cacheKey, data);
+              } else {
+                const msg = typeof data?.Payload === 'string' ? data.Payload.substring(0, 80) : '';
+                console.error(`VedAstro API ${ep.key}: ${data?.Status} ${msg}`);
+              }
+            } else {
+              console.error(`VedAstro API ${ep.key} returned HTTP ${resp.status}`);
+            }
+          } catch (e: any) {
+            console.error(`VedAstro API error for ${ep.key}:`, e?.message || e);
+          }
+        })
+      );
+      // Wait between batches to respect rate limit
+      if (i + batchSize < uncachedEndpoints.length) {
+        console.log(`VedAstro: Waiting 62s for rate limit reset before next batch...`);
+        await new Promise(resolve => setTimeout(resolve, 62000));
       }
-    })
-  );
+    }
+  } else {
+    console.log(`VedAstro: All ${endpoints.length} endpoints served from cache`);
+  }
+
+  console.log(`VedAstro: Final data available: ${Object.keys(results).join(', ')}`);
+  if (Object.keys(results).length < endpoints.length) {
+    const missing = endpoints.filter(ep => !results[ep.key]).map(ep => ep.key);
+    console.log(`VedAstro: Missing: ${missing.join(', ')}`);
+  }
 
   return results;
 }
 
-// Format astro data for LLM context — includes all VedAstro Calculate library data
+// Extract key planetary status info (retrograde, combust, exalted, debilitated) from AllPlanetData
+function extractPlanetaryStatus(allPlanetData: any): string {
+  try {
+    const payload = allPlanetData?.Payload?.AllPlanetData;
+    if (!payload) return "";
+
+    const planets = Array.isArray(payload) ? payload : [payload];
+    const statusLines: string[] = [];
+
+    for (const entry of planets) {
+      // Each entry is { "Sun": {...}, "Moon": {...} } etc.
+      for (const [planetName, data] of Object.entries(entry)) {
+        const d = data as Record<string, any>;
+        const flags: string[] = [];
+
+        if (d.IsPlanetRetrograde === "True") flags.push("RETROGRADE");
+        if (d.IsPlanetCombust === "True") flags.push("COMBUST");
+        if (d.IsPlanetExalted === "True") flags.push("EXALTED");
+        if (d.IsPlanetDebilitated === "True") flags.push("DEBILITATED");
+        if (d.IsPlanetAfflicted === "True") flags.push("AFFLICTED");
+        if (d.IsPlanetBenefic === "True") flags.push("Benefic");
+        if (d.IsPlanetBenefic === "False") flags.push("Malefic");
+
+        // Aspects received
+        const aspectsReceived: string[] = [];
+        if (d.AllMaleficPlanetsAspecting?.length) aspectsReceived.push(`Malefic aspects from: ${d.AllMaleficPlanetsAspecting.join(", ")}`);
+        if (d.BeneficPlanetsAspectingPlanet?.length) aspectsReceived.push(`Benefic aspects from: ${d.BeneficPlanetsAspectingPlanet.join(", ")}`);
+
+        // Houses aspected and owned
+        const housesAspected = d.HousesInAspect || "";
+        const housesOwned = d.HousesOwnedByPlanet || "";
+        const houseOccupied = d.HousePlanetOccupiesBasedOnSign || "";
+
+        if (flags.length > 0 || aspectsReceived.length > 0) {
+          let line = `- **${planetName}**: ${flags.join(", ")}`;
+          if (houseOccupied) line += ` | In: ${houseOccupied}`;
+          if (housesOwned) line += ` | Owns: ${housesOwned}`;
+          if (housesAspected) line += ` | Aspects: ${housesAspected}`;
+          if (aspectsReceived.length > 0) line += ` | ${aspectsReceived.join("; ")}`;
+          statusLines.push(line);
+        }
+      }
+    }
+
+    return statusLines.length > 0 ? statusLines.join("\n") : "";
+  } catch {
+    return "";
+  }
+}
+
+// Extract transit comparison: current planet signs vs natal signs
+function extractTransitSummary(transitData: any, natalData: any): string {
+  try {
+    const transitPayload = transitData?.Payload?.AllPlanetData;
+    const natalPayload = natalData?.Payload?.AllPlanetData;
+    if (!transitPayload || !natalPayload) return "";
+
+    const transitPlanets = Array.isArray(transitPayload) ? transitPayload : [transitPayload];
+    const natalPlanets = Array.isArray(natalPayload) ? natalPayload : [natalPayload];
+
+    const lines: string[] = [];
+    const now = new Date();
+    lines.push(`Transit date: ${now.toISOString().split("T")[0]}\n`);
+
+    for (const tEntry of transitPlanets) {
+      for (const [planetName, tData] of Object.entries(tEntry)) {
+        const td = tData as Record<string, any>;
+        const transitSign = td.PlanetSignName || td.PlanetRasiSign?.Name || "unknown";
+        const transitHouse = td.HousePlanetOccupiesBasedOnSign || "";
+        const isRetro = td.IsPlanetRetrograde === "True" ? " (R)" : "";
+
+        // Find natal sign for comparison
+        let natalSign = "";
+        for (const nEntry of natalPlanets) {
+          if (nEntry[planetName]) {
+            const nd = nEntry[planetName] as Record<string, any>;
+            natalSign = nd.PlanetSignName || nd.PlanetRasiSign?.Name || "";
+            break;
+          }
+        }
+
+        let line = `- **${planetName}${isRetro}**: Currently in ${transitSign}`;
+        if (transitHouse) line += ` (transit ${transitHouse})`;
+        if (natalSign && natalSign !== transitSign) line += ` | Natal: ${natalSign}`;
+        lines.push(line);
+      }
+    }
+
+    return lines.join("\n");
+  } catch {
+    return "";
+  }
+}
+
+// Format astro data for LLM context — includes ALL VedAstro Calculate library data:
+// natal, divisional charts, transit, aspects, retrogrades, combustion, Shadbala, Ashtakavarga, Dasha, Panchanga
 function formatAstroContext(data: Record<string, any>): string {
   let context = "## Vedic Astrology Chart Data (from VedAstro Calculate Library)\n\n";
 
@@ -105,23 +311,47 @@ function formatAstroContext(data: Record<string, any>): string {
     context += "\n\n";
   }
 
-  // Core chart data
-  addSection("allPlanetData", "Planetary Positions (Rashi, Degrees, Nakshatra)", 4000);
-  addSection("allHouseData", "House Data (Bhavas)", 3000);
-  addSection("horoscopePredictions", "Horoscope Predictions", 4000);
+  // ==================== NATAL CHART (D1) ====================
+  addSection("allPlanetData", "Planetary Positions (Rashi, Degrees, Nakshatra, Conjunctions, Aspects)", 5000);
+  addSection("allHouseData", "House Data (Bhavas — Lords, Occupants, Sign)", 3000);
 
-  // Shadbala — planetary strength analysis (from Core.cs)
+  // ==================== PLANETARY STATUS ====================
+  // Extracted from AllPlanetData: retrogrades, combustion, exaltation, debilitation, aspects
+  const planetaryStatus = extractPlanetaryStatus(data.allPlanetData);
+  if (planetaryStatus) {
+    context += `### Planetary Status (Retrograde, Combust, Exalted, Debilitated, Aspects)\n${planetaryStatus}\n\n`;
+  }
+
+  // ==================== SHADBALA ====================
   addSection("allPlanetStrength", "Shadbala — Planetary Strength Values", 2000);
   addSection("allPlanetOrderedByStrength", "Planets Ordered by Strength (Strongest to Weakest)", 1000);
 
-  // Ashtakavarga (from Ashtakavarga.cs)
+  // ==================== ASHTAKAVARGA ====================
   addSection("sarvashtakavarga", "Sarvashtakavarga Chart (Total Benefic Points per Sign)", 2000);
   addSection("bhinnashtakavarga", "Bhinnashtakavarga Chart (Individual Planet Bindus)", 2000);
 
-  // Vimshottari Dasha (from VimshottariDasa.cs)
+  // ==================== VIMSHOTTARI DASHA ====================
   addSection("dasaForNow", "Current Vimshottari Dasha Period (Mahadasha > Antardasha > Pratyantardasha)", 2000);
 
-  // Panchanga elements (from Core.cs)
+  // ==================== DIVISIONAL CHARTS (VARGAS) ====================
+  addSection("navamsha", "Navamsha (D9) — Dharma, Marriage, Spiritual Life", 2000);
+  addSection("drekkana", "Drekkana (D3) — Siblings, Courage, Valour", 1500);
+  addSection("dashamsha", "Dashamsha (D10) — Career, Profession, Public Life", 1500);
+  addSection("saptamsha", "Saptamsha (D7) — Children, Progeny", 1500);
+  addSection("hora", "Hora (D2) — Wealth, Finances", 1000);
+
+  // ==================== TRANSIT / GOCHARA ====================
+  const transitSummary = extractTransitSummary(data.transitPlanetData, data.allPlanetData);
+  if (transitSummary) {
+    context += `### Current Transit Positions (Gochara)\n${transitSummary}\n\n`;
+  }
+  // Also include raw transit data for deeper analysis
+  addSection("transitPlanetData", "Transit — Full Current Planetary Data (for Gochara analysis)", 3000);
+
+  // ==================== HOROSCOPE PREDICTIONS ====================
+  addSection("horoscopePredictions", "Horoscope Predictions (Classical Rule-Based)", 4000);
+
+  // ==================== PANCHANGA ====================
   addSection("nithyaYoga", "Nithya Yoga (Birth Yoga)", 500);
   addSection("karana", "Karana (Half Lunar Day)", 500);
   addSection("lunarDay", "Lunar Day (Tithi)", 500);
@@ -140,38 +370,67 @@ function buildSystemPrompt(astroContext: string, ragContext: string): string {
 - Ashtakavarga — Sarvashtakavarga and Bhinnashtakavarga point analysis
 - Vimshottari Dasha — current Mahadasha, Antardasha, and Pratyantardasha periods
 - Yogas, doshas, and their effects
+- Planetary aspects (graha drishti) — which planets aspect which houses/planets
+- Retrograde (Vakri) planets and their significance
+- Combustion (Asta) — planets too close to the Sun
+- Exaltation (Uchcha) and Debilitation (Neecha) status
 - Panchanga: Tithi, Nakshatra, Yoga, Karana, Vara
+- Transit/Gochara — current planetary positions relative to natal chart
+- Divisional charts (Vargas): D1 (Rashi), D2 (Hora), D3 (Drekkana), D7 (Saptamsha), D9 (Navamsha), D10 (Dashamsha)
 - Muhurta (auspicious timing)
-- Divisional charts (Vargas): D1 through D60
 - Compatibility analysis (Kundali matching)
 - Remedial measures (gemstones, mantras, pujas)
 
 ## Data Available from VedAstro Calculate Library
 You have access to comprehensive chart data computed by VedAstro's C# calculation engine:
+
+### Natal Chart (D1 — Rashi)
 - **Planetary Positions**: Sign, degree, nakshatra, pada for all 9 planets + nodes
 - **House Data**: All 12 bhavas with lords and occupants
+- **Planetary Status**: Retrograde, combust, exalted, debilitated, afflicted flags for each planet
+- **Aspects**: Which planets aspect which houses, malefic/benefic aspects received by each planet
+- **Conjunctions**: Benefic, malefic, friend, enemy conjunctions for each planet
+
+### Strength Analysis
 - **Shadbala**: Numerical strength values showing which planets are strongest/weakest
 - **Ashtakavarga**: Sarvashtakavarga (total points per sign) and Bhinnashtakavarga (individual planet bindus)
+
+### Timing
 - **Vimshottari Dasha**: Current Mahadasha > Antardasha > Pratyantardasha with dates
+- **Transit/Gochara**: Current real-time planetary positions — which signs planets are transiting NOW, compared to natal positions. Use this for timing predictions and current period analysis.
+
+### Divisional Charts (Vargas)
+- **Navamsha (D9)**: Marriage, dharma, spiritual life — planet signs in the 9th divisional chart
+- **Dashamsha (D10)**: Career, profession, public life
+- **Drekkana (D3)**: Siblings, courage, valour
+- **Saptamsha (D7)**: Children, progeny
+- **Hora (D2)**: Wealth, finances
+
+### Panchanga & Predictions
 - **Panchanga**: Tithi, Nithya Yoga, Karana at time of birth
 - **Horoscope Predictions**: Pre-computed prediction texts from classical rules
 
 ## Reasoning Approach
 When answering questions:
-1. First analyze the chart data — planetary positions, strengths, and house placements
-2. Check Shadbala to identify strong and weak planets
-3. Examine Ashtakavarga points for sign-level benefic/malefic assessment
-4. Consider the current Vimshottari Dasha period and its lord
-5. Look for yogas, aspects, and conjunctions
-6. Provide interpretations with classical references
-7. Suggest remedies when appropriate
+1. First analyze the natal chart — planetary positions, strengths, and house placements
+2. Check **Planetary Status** — identify retrograde, combust, exalted, or debilitated planets
+3. Review **Aspects** — which planets receive benefic/malefic aspects, which houses are aspected
+4. Check **Shadbala** to quantify strong and weak planets
+5. Examine **Ashtakavarga** points for sign-level benefic/malefic assessment
+6. Consider the current **Vimshottari Dasha** period and its lord's natal condition
+7. Analyze **Transit/Gochara** — where are planets NOW vs. natal positions? Which natal houses are being transited?
+8. Check relevant **Divisional Charts** (D9 for marriage questions, D10 for career, D7 for children, D2 for wealth)
+9. Look for yogas and apply classical rules
+10. Provide interpretations with classical references and suggest remedies
 
 ## Response Style
 - Be warm, compassionate, and encouraging
 - Use proper Vedic astrology terminology with explanations
 - Reference classical texts when possible (Brihat Parashara Hora Shastra, Phaladeepika, Jataka Parijata, etc.)
 - Quote specific Shadbala strength values and Ashtakavarga bindu counts to support your analysis
-- Always mention the current Dasha period and its effects when relevant
+- Mention retrograde/combust status when analyzing a planet
+- Always reference the current Dasha period AND current transits when discussing timing
+- Use divisional charts to go deeper on specific life areas (D9 for marriage, D10 for career)
 - Always clarify that astrology provides guidance, not deterministic predictions
 - Format responses with clear sections using markdown
 
@@ -179,7 +438,7 @@ ${astroContext ? `## Birth Chart Data Available\n${astroContext}` : "## No birth
 
 ${ragContext ? `## Reference Knowledge from Uploaded Books\n${ragContext}` : ""}
 
-Remember: Analyze ALL available chart data thoroughly — Shadbala, Ashtakavarga, Dasha, and Panchanga — to provide detailed, personalized, and data-backed insights. Use chain-of-thought reasoning to explain your analysis step by step.`;
+Remember: Analyze ALL available chart data thoroughly — natal positions, planetary status (retrograde/combust/aspects), Shadbala, Ashtakavarga, Dasha, transits, and divisional charts — to provide detailed, personalized, and data-backed insights. Use chain-of-thought reasoning to explain your analysis step by step.`;
 }
 
 export async function registerRoutes(
@@ -327,11 +586,15 @@ export async function registerRoutes(
           max_tokens: 1024,
           system: `You are a Vedic astrology reasoning engine powered by VedAstro calculations. Given the user's question and available chart data, think through the analysis step by step. Be concise but thorough. Focus on:
 1. Which planetary positions are relevant and their Shadbala strength values
-2. Ashtakavarga bindu counts for the relevant signs/houses
-3. Current Vimshottari Dasha period and its lord's condition
-4. What yogas or aspects apply
-5. Panchanga factors (Tithi, Yoga, Karana) if relevant
-6. Classical text references (BPHS, Phaladeepika, Jataka Parijata)
+2. Planetary status: check for retrograde (Vakri), combust (Asta), exalted (Uchcha), debilitated (Neecha) planets
+3. Aspects: which planets receive benefic/malefic aspects, and which houses are aspected
+4. Ashtakavarga bindu counts for the relevant signs/houses
+5. Current Vimshottari Dasha period and its lord's natal condition
+6. Transit/Gochara: where are planets NOW vs natal? Which natal houses are being transited by benefics/malefics?
+7. Divisional charts: D9 (Navamsha) for marriage/dharma, D10 (Dashamsha) for career, D7 for children, D2 for wealth
+8. What yogas apply based on planetary combinations
+9. Panchanga factors (Tithi, Yoga, Karana) if relevant
+10. Classical text references (BPHS, Phaladeepika, Jataka Parijata)
 
 ${astroContext}
 ${ragContext ? `\nReference material:\n${ragContext}` : ""}`,
@@ -444,6 +707,64 @@ ${ragContext ? `\nReference material:\n${ragContext}` : ""}`,
 
       res.json({ id: doc.id, filename, chunkCount: chunks.length });
     } catch (e: any) {
+      res.status(400).json({ error: e.message });
+    }
+  });
+
+  // ====== RAG FILE UPLOAD (PDF, TXT, MD) ======
+  app.post("/api/rag/upload-file", upload.single("file"), async (req: Request, res: Response) => {
+    try {
+      const visitorId = getVisitorId(req);
+      const file = (req as any).file;
+
+      if (!file) {
+        return res.status(400).json({ error: "No file uploaded" });
+      }
+
+      const filename = file.originalname;
+      let textContent = "";
+
+      // Extract text based on file type
+      const ext = filename.toLowerCase().split(".").pop();
+      if (ext === "pdf") {
+        try {
+          const pdfData = await pdfParse(file.buffer);
+          textContent = pdfData.text;
+          console.log(`PDF parsed: ${filename} — ${pdfData.numpages} pages, ${textContent.length} chars`);
+        } catch (pdfErr: any) {
+          return res.status(400).json({ error: `Failed to parse PDF: ${pdfErr.message}` });
+        }
+      } else {
+        // Plain text files (.txt, .md, .csv)
+        textContent = file.buffer.toString("utf-8");
+      }
+
+      if (!textContent.trim()) {
+        return res.status(400).json({ error: "No text content could be extracted from the file" });
+      }
+
+      // Chunk the content
+      const chunks = chunkText(textContent, 500, 50);
+
+      // Save document metadata
+      const doc = await storage.addRagDocument({
+        visitorId,
+        filename,
+        chunkCount: chunks.length,
+      });
+
+      // Save chunks
+      await storage.addRagChunks(
+        chunks.map((text, idx) => ({
+          documentId: doc.id,
+          content: text,
+          chunkIndex: idx,
+        }))
+      );
+
+      res.json({ id: doc.id, filename, chunkCount: chunks.length, charCount: textContent.length });
+    } catch (e: any) {
+      console.error("File upload error:", e);
       res.status(400).json({ error: e.message });
     }
   });
